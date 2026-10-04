@@ -33,9 +33,14 @@ func main() {
 
 func run() error {
 	custom := flag.String("wordlist", "", "path to an additional word list (one word per line, or \"index word\")")
+	requireMlock := flag.Bool("require-mlock", false, "refuse to start unless all process memory can be locked against swapping")
 	flag.Parse()
 
-	hs := harden.Apply()
+	hs, err := harden.Apply(*requireMlock)
+	if err != nil {
+		exe, _ := os.Executable()
+		return fmt.Errorf("%w\ngrant the capability with: sudo setcap cap_ipc_lock=ep %s", err, exe)
+	}
 
 	lists, err := wordlist.Embedded()
 	if err != nil {

@@ -41,6 +41,7 @@ Requires Go 1.27+ and Linux (other Unixes work, but without the process hardenin
 go build -o diceware .
 ./diceware
 ./diceware --wordlist ~/my-list.txt   # adds a custom list to the options
+./diceware --require-mlock            # refuses to start unless no memory can be swapped
 ```
 
 Custom word lists contain one word per line, either `word` or `index word`
@@ -72,7 +73,7 @@ Run the tests with `go test ./...`.
 | Direct assembly | The passphrase is written straight into the locked buffer and never built up as Go strings. The random draws (word indices, digits, the gap position) are cleared right after use. |
 | `RLIMIT_CORE = 0` | A crash doesn't produce a core dump containing the memory. |
 | `PR_SET_DUMPABLE = 0` | Other processes running as your user can't `ptrace` it or read `/proc/<pid>/mem`. |
-| `mlockall` | Only when `RLIMIT_MEMLOCK` is unlimited. Otherwise it's skipped and the footer says so; the secret buffers are mlocked by memguard in either case. |
+| `mlockall(MCL_CURRENT\|MCL_FUTURE\|MCL_ONFAULT)` | Locks the whole process, so nothing of it is ever swapped. This needs `CAP_IPC_LOCK` or an unlimited memlock limit; see [Locking all memory](#locking-all-memory). Without either it's skipped and the footer says so. memguard mlocks the secret buffers in any case. |
 | `memguard.Purge()` on exit | Wipes all buffers and destroys the key that protects the enclaves. This also runs on `ctrl+c`, SIGTERM and SIGHUP. |
 | Alternate screen | Nothing is left in your terminal's scrollback after you quit. |
 | Clipboard over stdin | The secret is never passed in argv (visible in `ps`) or in environment variables. `wl-copy --sensitive` tells KDE Klipper and other clipboard managers that honor the hint to leave it out of their history. |
@@ -95,11 +96,41 @@ and when they are, they sit in locked memory that is wiped afterwards. Known gap
   the passphrase. Clipboard managers that ignore the sensitive hint can store it
   permanently. Also, *paste once* doesn't mix well with managers that read the
   clipboard right away, because they use up the one paste.
-- **Swap and hibernation**: memguard's buffers are never swapped, but the
-  rendered strings can be. Use encrypted swap (or none), and don't hibernate
-  while the program is running.
+- **Swap and hibernation**: memguard's buffers are never swapped. The rest of
+  the process, including rendered strings, is only protected when `mlockall` is
+  active (see below). Hibernation writes even locked memory to disk, so don't
+  hibernate while the program is running.
 - **root** can read any process memory. If your machine is compromised, no
   password generator can help you.
+
+### Locking all memory
+
+The kernel only allows `mlockall` when the process's entire *virtual* size fits
+under `RLIMIT_MEMLOCK`. The Go runtime reserves well over 1 GiB of address space,
+even though it actually uses only about 10 MB, while the default limit is
+8 MiB. So you have two options:
+
+```sh
+# Recommended: allow just this binary to lock memory (repeat after every build)
+sudo setcap cap_ipc_lock=ep ./diceware
+
+# Alternative: raise the limit for your user in /etc/security/limits.d/memlock.conf
+#   youruser  -  memlock  unlimited
+```
+
+The capability isn't passed on to the clipboard helper or any other child
+process. `MCL_ONFAULT` locks pages only once they are actually used, so the
+large address-space reservations don't cost real RAM.
+
+With `--require-mlock`, the program exits with an error (and the `setcap`
+command to fix it) instead of running without the lock. To check while it's
+running: `grep VmLck /proc/$(pgrep -n diceware)/status` shows the locked
+amount.
+
+Locking only covers this process. The terminal emulator holding the
+revealed text and the programs you paste into are separate processes. If your
+swap is zram only (compressed RAM, the default on many distributions) and
+hibernation is off, nothing reaches the disk anyway.
 
 ### Saving to a file
 
