@@ -2,6 +2,7 @@ package gen
 
 import (
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode"
@@ -23,18 +24,6 @@ func generate(t *testing.T, c Config) string {
 	return string(b.Bytes())
 }
 
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
 func inList(w string) bool {
 	for _, x := range testWords {
 		if strings.EqualFold(x, w) {
@@ -42,6 +31,20 @@ func inList(w string) bool {
 		}
 	}
 	return false
+}
+
+var digitRun = regexp.MustCompile(`[0-9]+`)
+
+// countMatches returns how many tokens match the regular expression.
+func countMatches(tok []string, expr string) int {
+	re := regexp.MustCompile(expr)
+	n := 0
+	for _, w := range tok {
+		if re.MatchString(w) {
+			n++
+		}
+	}
+	return n
 }
 
 func TestGenerate(t *testing.T) {
@@ -74,22 +77,19 @@ func TestGenerate(t *testing.T) {
 				}
 			}
 		}},
-		{"digits before", Config{Words: 4, Sep: "_", DigitPos: DigitsBefore, DigitMin: 2, DigitMax: 4}, func(t *testing.T, tok []string) {
-			if len(tok) != 5 || !isDigits(tok[0]) || len(tok[0]) < 2 || len(tok[0]) > 4 {
+		{"digits before a word", Config{Words: 4, Sep: "_", DigitPos: DigitsBefore, DigitMin: 2, DigitMax: 4}, func(t *testing.T, tok []string) {
+			if len(tok) != 4 || countMatches(tok, `^[0-9]{2,4}\pL+$`) != 1 {
 				t.Fatalf("bad tokens %q", tok)
 			}
 		}},
-		{"digits after", Config{Words: 4, Sep: "_", DigitPos: DigitsAfter, DigitMin: 3, DigitMax: 3}, func(t *testing.T, tok []string) {
-			if len(tok) != 5 || !isDigits(tok[4]) || len(tok[4]) != 3 {
+		{"digits after a word", Config{Words: 4, Sep: "_", DigitPos: DigitsAfter, DigitMin: 3, DigitMax: 3}, func(t *testing.T, tok []string) {
+			if len(tok) != 4 || countMatches(tok, `^\pL+[0-9]{3}$`) != 1 {
 				t.Fatalf("bad tokens %q", tok)
 			}
 		}},
-		{"digits between", Config{Words: 3, Sep: "_", DigitPos: DigitsBetween, DigitMin: 1, DigitMax: 8}, func(t *testing.T, tok []string) {
-			if len(tok) != 4 || isDigits(tok[0]) || isDigits(tok[3]) {
-				t.Fatalf("digits at an end: %q", tok)
-			}
-			if !isDigits(tok[1]) && !isDigits(tok[2]) {
-				t.Fatalf("no digit block: %q", tok)
+		{"digits between words", Config{Words: 3, Sep: "_", DigitPos: DigitsBetween, DigitMin: 1, DigitMax: 8}, func(t *testing.T, tok []string) {
+			if len(tok) != 2 || countMatches(tok, `^\pL+[0-9]{1,8}\pL+$`) != 1 {
+				t.Fatalf("bad tokens %q", tok)
 			}
 		}},
 	}
@@ -98,8 +98,10 @@ func TestGenerate(t *testing.T) {
 			for range 200 {
 				tok := strings.Split(generate(t, tt.cfg), tt.cfg.Sep)
 				for _, w := range tok {
-					if !isDigits(w) && !inList(w) {
-						t.Fatalf("unknown token %q in %q", w, tok)
+					for _, part := range digitRun.Split(w, -1) {
+						if part != "" && !inList(part) {
+							t.Fatalf("unknown word %q in %q", part, tok)
+						}
 					}
 				}
 				tt.check(t, tok)
@@ -109,9 +111,11 @@ func TestGenerate(t *testing.T) {
 }
 
 func TestGenerateNoSeparator(t *testing.T) {
-	got := generate(t, Config{Words: 3, Sep: "", DigitPos: DigitsAfter, DigitMin: 2, DigitMax: 2})
-	if !isDigits(got[len(got)-2:]) || strings.ContainsAny(got, " -") {
-		t.Fatalf("unexpected %q", got)
+	for range 50 {
+		got := generate(t, Config{Words: 3, Sep: "", DigitPos: DigitsAfter, DigitMin: 2, DigitMax: 2})
+		if len(digitRun.FindAllString(got, -1)) != 1 || strings.ContainsAny(got, " -") {
+			t.Fatalf("unexpected %q", got)
+		}
 	}
 }
 
@@ -149,7 +153,8 @@ func TestEntropy(t *testing.T) {
 		{"6 words", Config{Words: 6}, 6 * eff},
 		{"first caps adds nothing", Config{Words: 6, Caps: CapsFirst}, 6 * eff},
 		{"random caps", Config{Words: 6, Caps: CapsRandom}, 6*eff + 6},
-		{"fixed 3 digits after", Config{Words: 6, DigitPos: DigitsAfter, DigitMin: 3, DigitMax: 3}, 6*eff + 3*math.Log2(10)},
+		{"fixed 3 digits after a word", Config{Words: 6, DigitPos: DigitsAfter, DigitMin: 3, DigitMax: 3}, 6*eff + 3*math.Log2(10) + math.Log2(6)},
+		{"fixed 2 digits before a word", Config{Words: 4, DigitPos: DigitsBefore, DigitMin: 2, DigitMax: 2}, 4*eff + 2*math.Log2(10) + 2},
 		{"1-4 digits between", Config{Words: 5, DigitPos: DigitsBetween, DigitMin: 1, DigitMax: 4}, 5*eff + 2 + math.Log2(10) + 2},
 	}
 	for _, tt := range tests {

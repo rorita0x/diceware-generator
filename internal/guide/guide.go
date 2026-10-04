@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
+	"strings"
 )
 
 // Hash is the password hashing scheme protecting the passphrase.
@@ -128,6 +130,21 @@ func FormatDuration(s float64) string {
 	default:
 		return "> universe"
 	}
+}
+
+// FormatRate renders a guess rate like 2.5·10¹⁰.
+func FormatRate(r float64) string {
+	if r <= 0 {
+		return "0"
+	}
+	exp := int(math.Floor(math.Log10(r)))
+	mant := r / math.Pow(10, float64(exp))
+	sup := strings.NewReplacer("0", "⁰", "1", "¹", "2", "²", "3", "³", "4", "⁴",
+		"5", "⁵", "6", "⁶", "7", "⁷", "8", "⁸", "9", "⁹", "-", "⁻").Replace(strconv.Itoa(exp))
+	if math.Abs(mant-1) < 0.05 {
+		return "10" + sup
+	}
+	return strconv.FormatFloat(mant, 'f', -1, 64) + "·10" + sup
 }
 
 // Threat is one threat model with the entropy we recommend for it.

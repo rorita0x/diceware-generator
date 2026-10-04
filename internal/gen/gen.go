@@ -40,22 +40,23 @@ func (c Caps) String() string {
 	}
 }
 
-// DigitPos selects where the random digit block goes.
+// DigitPos selects where the random digit block goes. The block is always
+// glued to a word, never set apart by the separator.
 type DigitPos int
 
 const (
 	DigitsOff     DigitPos = iota
-	DigitsBefore           // 4711-word-word
-	DigitsAfter            // word-word-4711
-	DigitsBetween          // word-4711-word, in a random gap
+	DigitsBefore           // word-4711word-word: prefix of a random word
+	DigitsAfter            // word-word4711-word: suffix of a random word
+	DigitsBetween          // word-word4711word: replaces the separator in a random gap
 )
 
 func (d DigitPos) String() string {
 	switch d {
 	case DigitsBefore:
-		return "before"
+		return "before a word"
 	case DigitsAfter:
-		return "after"
+		return "after a word"
 	case DigitsBetween:
 		return "between (random gap)"
 	default:
@@ -113,7 +114,8 @@ func (c Config) Validate() error {
 // for a word list of n words. It assumes the attacker knows the word list
 // and the full Config, and counts the digit block by its min-entropy: the
 // shortest length is the most likely guess, so variable length only adds
-// log2(number of possible lengths).
+// log2(number of possible lengths). The random placement adds log2 of the
+// number of words (before/after) or gaps (between).
 func Entropy(c Config, n int) float64 {
 	if n < 2 || c.Words < 1 {
 		return 0
@@ -124,7 +126,10 @@ func Entropy(c Config, n int) float64 {
 	}
 	if c.DigitPos != DigitsOff {
 		bits += math.Log2(float64(c.DigitMax-c.DigitMin+1)) + float64(c.DigitMin)*math.Log2(10)
-		if c.DigitPos == DigitsBetween && c.Words > 1 {
+		switch c.DigitPos {
+		case DigitsBefore, DigitsAfter:
+			bits += math.Log2(float64(c.Words))
+		case DigitsBetween:
 			bits += math.Log2(float64(c.Words - 1))
 		}
 	}
@@ -145,12 +150,12 @@ func Generate(c Config, words []string) (*memguard.Enclave, error) {
 	idx := make([]int, c.Words)
 	upper := make([]bool, c.Words)
 	var digits [MaxDigitLen]byte
-	digitLen, gap := 0, 0
+	digitLen, at := 0, 0
 	defer func() {
 		clear(idx)
 		clear(upper)
 		clear(digits[:])
-		digitLen, gap = 0, 0
+		digitLen, at = 0, 0
 	}()
 
 	for i := range idx {
@@ -184,55 +189,54 @@ func Generate(c Config, words []string) (*memguard.Enclave, error) {
 			}
 			digits[i] = byte('0' + d)
 		}
-		switch c.DigitPos {
-		case DigitsBefore:
-			gap = 0
-		case DigitsAfter:
-			gap = c.Words
-		case DigitsBetween:
-			g, err := Int(c.Words - 1)
-			if err != nil {
-				return nil, err
-			}
-			gap = 1 + g // 1..Words-1: never at either end
+		// before/after: index of the word the digits stick to (0..Words-1).
+		// between: index of the word after the gap (1..Words-1).
+		if c.DigitPos == DigitsBetween {
+			at, err = Int(c.Words - 1)
+			at++
+		} else {
+			at, err = Int(c.Words)
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	// Pass 1 counts bytes, pass 2 writes into the locked buffer.
-	size := assemble(nil, c, words, idx, upper, digits[:digitLen], gap)
+	size := assemble(nil, c, words, idx, upper, digits[:digitLen], at)
 	buf := memguard.NewBuffer(size)
-	assemble(buf.Bytes(), c, words, idx, upper, digits[:digitLen], gap)
+	assemble(buf.Bytes(), c, words, idx, upper, digits[:digitLen], at)
 	return buf.Seal(), nil
 }
 
 // assemble writes the passphrase into dst and returns its length. With a nil
-// dst it only counts. The digit block, if any, is inserted as its own token
-// before word number gap.
-func assemble(dst []byte, c Config, words []string, idx []int, upper []bool, digits []byte, gap int) int {
+// dst it only counts. The digit block, if any, is glued to word number at:
+// as prefix (before), suffix (after), or in place of the separator in front
+// of it (between).
+func assemble(dst []byte, c Config, words []string, idx []int, upper []bool, digits []byte, at int) int {
 	n := 0
-	tokens := 0
 	put := func(b []byte) {
 		if dst != nil {
 			copy(dst[n:], b)
 		}
 		n += len(b)
 	}
-	sep := func() {
-		if tokens > 0 {
-			put([]byte(c.Sep))
+	hasDigits := len(digits) > 0
+	for i := range idx {
+		if i > 0 {
+			if hasDigits && c.DigitPos == DigitsBetween && i == at {
+				put(digits)
+			} else {
+				put([]byte(c.Sep))
+			}
 		}
-		tokens++
-	}
-	for i := 0; i <= len(idx); i++ {
-		if len(digits) > 0 && i == gap {
-			sep()
+		if hasDigits && c.DigitPos == DigitsBefore && i == at {
 			put(digits)
 		}
-		if i == len(idx) {
-			break
-		}
-		sep()
 		n += writeWord(dst, n, words[idx[i]], upper[i], c.Caps == CapsAll)
+		if hasDigits && c.DigitPos == DigitsAfter && i == at {
+			put(digits)
+		}
 	}
 	return n
 }

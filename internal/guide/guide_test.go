@@ -55,3 +55,20 @@ func TestRows(t *testing.T) {
 		t.Errorf("Rows(80) duplicated a row: %v", got)
 	}
 }
+
+func TestFormatRate(t *testing.T) {
+	tests := []struct {
+		r    float64
+		want string
+	}{
+		{1e3, "10³"},
+		{2.5e10, "2.5·10¹⁰"},
+		{2e1, "2·10¹"},
+		{1e17, "10¹⁷"},
+	}
+	for _, tt := range tests {
+		if got := FormatRate(tt.r); got != tt.want {
+			t.Errorf("FormatRate(%v) = %q, want %q", tt.r, got, tt.want)
+		}
+	}
+}
